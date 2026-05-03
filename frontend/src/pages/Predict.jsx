@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getSymptoms, predictDisease } from '../utils/api';
-import Fuse from 'fuse.js';
 import { Mic, Search, X, Loader2, AlertCircle } from 'lucide-react';
 
 const Predict = () => {
@@ -87,36 +86,36 @@ const Predict = () => {
       setIsListening(true);
       setError(null);
     };
-
-    
     recognition.onresult = (event) => {
-  const transcript = event.results[0][0].transcript.toLowerCase().trim();
+      const transcript = event.results[0][0].transcript.toLowerCase().trim();
 
-  const fuse = new Fuse(symptoms, {
-    keys: ['name'],
-    threshold: 0.3,      // 0.0 = exact, 1.0 = match anything — 0.3 is a good balance
-    minMatchCharLength: 3,
-  });
+      // First try exact name match
+      let matched = symptoms.filter(sym =>
+        sym.name.toLowerCase() === transcript &&
+        !selectedSymptoms.find(s => s.id === sym.id)
+      );
 
-  const results = fuse.search(transcript);
-  const matched = results
-    .map(r => r.item)
-    .filter(sym => !selectedSymptoms.find(s => s.id === sym.id))
-    .slice(0, 3); // max 3 matches so it doesn't go crazy
+      // If no exact match, try full phrase match
+      if (matched.length === 0) {
+        matched = symptoms.filter(sym =>
+          transcript.includes(sym.name.toLowerCase()) &&
+          !selectedSymptoms.find(s => s.id === sym.id)
+        );
+      }
 
-  if (matched.length > 0) {
-    setSelectedSymptoms(prev => {
-      const newSymptoms = [...prev];
-      matched.forEach(m => {
-        if (!newSymptoms.find(s => s.id === m.id)) newSymptoms.push(m);
-      });
-      return newSymptoms;
-    });
-  } else {
-    setSearchTerm(transcript);
-    setError("Could not match voice input. Showing search results instead.");
-  }
-};
+      if (matched.length > 0) {
+        setSelectedSymptoms(prev => {
+          const newSymptoms = [...prev];
+          matched.forEach(m => {
+            if (!newSymptoms.find(s => s.id === m.id)) newSymptoms.push(m);
+          });
+          return newSymptoms;
+        });
+      } else {
+        setSearchTerm(transcript);
+        setError("Could not match voice input. Showing search results instead.");
+      }
+    };
 
 
     recognition.onerror = (event) => {
@@ -131,15 +130,10 @@ const Predict = () => {
     recognition.start();
   };
 
-  const filteredSymptoms = searchTerm.length > 1
-  ? new Fuse(symptoms, { keys: ['name'], threshold: 0.3 })
-      .search(searchTerm)
-      .map(r => r.item)
-      .filter(s => !selectedSymptoms.find(sel => sel.id === s.id))
-  : symptoms.filter(s =>
-      s.name.toLowerCase().includes(searchTerm.toLowerCase()) &&
-      !selectedSymptoms.find(sel => sel.id === s.id)
-    );
+  const filteredSymptoms = symptoms.filter(s => 
+    s.name.toLowerCase().includes(searchTerm.toLowerCase()) && 
+    !selectedSymptoms.find(sel => sel.id === s.id)
+  );
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-12">
