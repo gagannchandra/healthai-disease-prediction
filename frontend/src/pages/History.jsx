@@ -49,7 +49,7 @@ const History = () => {
           <HistoryIcon className="w-16 h-16 mx-auto text-slate-300 mb-4" />
           <h3 className="text-xl font-medium text-slate-700 mb-2">No history found</h3>
           <p className="text-slate-500 mb-6">You haven't made any predictions yet.</p>
-          <Link to="/predict" className="btn-primary inline-flex">
+          <Link to="/predict" className="btn-primary inline-flex select-none">
             Start a Prediction
           </Link>
         </div>
