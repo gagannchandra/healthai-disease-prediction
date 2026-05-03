@@ -86,21 +86,22 @@ const Predict = () => {
       setIsListening(true);
       setError(null);
     };
-
     recognition.onresult = (event) => {
-      const transcript = event.results[0][0].transcript.toLowerCase();
-      
-      // Try to match transcript with symptoms
-      const words = transcript.split(' ');
-      const matched = [];
-      
-      symptoms.forEach(sym => {
-        if (transcript.includes(sym.name.toLowerCase()) || words.some(w => sym.id.includes(w))) {
-          if (!selectedSymptoms.find(s => s.id === sym.id)) {
-            matched.push(sym);
-          }
-        }
-      });
+      const transcript = event.results[0][0].transcript.toLowerCase().trim();
+
+      // First try exact name match
+      let matched = symptoms.filter(sym =>
+        sym.name.toLowerCase() === transcript &&
+        !selectedSymptoms.find(s => s.id === sym.id)
+      );
+
+      // If no exact match, try full phrase match
+      if (matched.length === 0) {
+        matched = symptoms.filter(sym =>
+          transcript.includes(sym.name.toLowerCase()) &&
+          !selectedSymptoms.find(s => s.id === sym.id)
+        );
+      }
 
       if (matched.length > 0) {
         setSelectedSymptoms(prev => {
@@ -111,9 +112,11 @@ const Predict = () => {
           return newSymptoms;
         });
       } else {
-        setError("Could not match your voice input to any symptoms. Try typing them instead.");
+        setSearchTerm(transcript);
+        setError("Could not match voice input. Showing search results instead.");
       }
     };
+
 
     recognition.onerror = (event) => {
       setError("Voice recognition error: " + event.error);
