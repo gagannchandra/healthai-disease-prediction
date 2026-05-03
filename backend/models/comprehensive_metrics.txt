@@ -1,0 +1,78 @@
+--- Disease Prediction System: Comprehensive Metrics Report ---
+Generated at: 2026-05-03 08:13:16
+
+=== DATASET METRICS ===
+Total number of samples: 102238 rows
+Number of diseases (classes): 141
+Number of symptoms (features): 343
+Samples per disease (class distribution): min 150 / mean 725.1 / max 1219
+Train size (%): 80.0%
+Test size (%): 20.0%
+Validation size: N/A (Using Test split)
+Random state (for reproducibility): 42
+
+=== INDIVIDUAL MODEL PERFORMANCE ===
+
+Decision Tree:
+  Training Accuracy: 95.93%
+  Testing Accuracy:  86.62%
+  Training accuracy vs Testing accuracy diff: 9.30%
+  Accuracy of each individual model: 86.62%
+  Precision:         87.64%
+  Recall:            87.86%
+  F1-Score:          87.69%
+  True Positive (TP):  17713
+  False Positive (FP): 2735
+  False Negative (FN): 2735
+  True Negative (TN):  2859985
+  Training time (in seconds): 108.5103
+  Time per prediction: 0.0702 ms
+  Confidence score of prediction (%): 95.42%
+  Model complexity:  Depth: 0, Leaves: 0
+  Memory usage (optional but impressive): 55.72 MB
+
+Random Forest:
+  Training Accuracy: 82.36%
+  Testing Accuracy:  81.09%
+  Training accuracy vs Testing accuracy diff: 1.27%
+  Accuracy of each individual model: 81.09%
+  Precision:         67.51%
+  Recall:            69.73%
+  F1-Score:          66.68%
+  True Positive (TP):  16581
+  False Positive (FP): 3867
+  False Negative (FN): 3867
+  True Negative (TN):  2858853
+  Training time (in seconds): 54.7146
+  Time per prediction: 0.0663 ms
+  Confidence score of prediction (%): 93.37%
+  Model complexity:  Trees: 100, Depth: None
+  Memory usage (optional but impressive): 25.85 MB
+
+Naive Bayes:
+  Training Accuracy: 89.42%
+  Testing Accuracy:  87.89%
+  Training accuracy vs Testing accuracy diff: 1.53%
+  Accuracy of each individual model: 87.89%
+  Precision:         82.81%
+  Recall:            81.56%
+  F1-Score:          81.30%
+  True Positive (TP):  17972
+  False Positive (FP): 2476
+  False Negative (FN): 2476
+  True Negative (TN):  2860244
+  Training time (in seconds): 0.6343
+  Time per prediction: 0.1879 ms
+  Confidence score of prediction (%): 94.70%
+  Model complexity:  N/A
+  Memory usage (optional but impressive): 0.77 MB
+
+=== ENSEMBLE SYSTEM PERFORMANCE ===
+Accuracy after combining: 87.84%
+Improvement (%): -0.05%
+
+=== SYSTEM AND SCALABILITY METRICS ===
+API response time: 5.32 ms
+Number of users supported (estimate): 187 requests/sec per core
+Top-3 disease suggestions instead of one: Supported by API (/predict returns top_3)
+Doctor recommendation accuracy (logic-based): 100.0% (Deterministic mapping based on predicted class)
