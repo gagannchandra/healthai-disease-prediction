@@ -92,6 +92,11 @@ class SymptomInput(BaseModel):
 class ChatInput(BaseModel):
     message: str
 
+@app.get("/")
+def root():
+    return {"status": "HealthAI backend is running"}
+
+
 @app.get("/api/symptoms")
 def get_symptoms():
     if not symptoms_list:
