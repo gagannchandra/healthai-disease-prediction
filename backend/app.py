@@ -62,7 +62,10 @@ app = FastAPI(title="Disease Prediction API", version="1.0")
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173")], 
+    allow_origins=[
+        "https://healthtai-disease-prediction.vercel.app",
+        "http://localhost:5173"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
