@@ -4,6 +4,7 @@ import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGri
 import { Activity, Stethoscope, ArrowLeft, ExternalLink, AlertTriangle, Shield, Pill, Utensils, Info } from 'lucide-react';
 
 const Results = () => {
+  document.title = "Results | HealthAI";
   const location = useLocation();
   const data = location.state?.result;
 
