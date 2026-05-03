@@ -3,6 +3,7 @@ import { History as HistoryIcon, Trash2 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
 const History = () => {
+  document.title = "History | HealthAI";
   const [history, setHistory] = useState([]);
 
   useEffect(() => {
