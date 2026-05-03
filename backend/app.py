@@ -14,7 +14,7 @@ from sklearn.preprocessing import LabelEncoder
 class XGBWrapper:
     def __init__(self, model_type='rf', **kwargs):
         if 'device' not in kwargs:
-            kwargs['device'] = 'cuda'
+            kwargs['device'] = os.getenv('DEVICE', 'cpu')
         if model_type == 'rf':
             self.model = XGBRFClassifier(**kwargs)
         else:
@@ -62,7 +62,7 @@ app = FastAPI(title="Disease Prediction API", version="1.0")
 # Enable CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust in production
+    allow_origins=[os.getenv("FRONTEND_URL", "http://localhost:5173")], 
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
