@@ -3,9 +3,9 @@ import { GitBranch, Users, Award, Code } from 'lucide-react';
 
 const TEAM_MEMBERS = [
   { name: 'Gagan Chandra', roll: '2201641520069', github: 'gagannchandra' },
-  { name: 'Gaurav', roll: '2201641520072', github: '' },
+  { name: 'Gaurav', roll: '2201641520072', github: '2k22csai32026-png' },
   { name: 'Anurag Shukla', roll: '2201641520035', github: 'anurag-sys2' },
-  { name: 'Devansh Bajpai', roll: '2201641520063', github: '' },
+  { name: 'Devansh Bajpai', roll: '2201641520063', github: 'Devansh121021' },
   { name: 'Abhash Shukla', roll: '2201641520003', github: 'AbhashShukla01' },
 ];
 
@@ -14,6 +14,7 @@ const getInitials = (name) => {
 };
 
 const About = () => {
+  document.title = "About | HealthAI";
   return (
     <div className="max-w-5xl mx-auto px-4 py-12">
       <div className="text-center mb-16">
