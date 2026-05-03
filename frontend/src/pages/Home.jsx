@@ -13,6 +13,7 @@ const FeatureCard = ({ icon, title, description }) => (
 );
 
 const Home = () => {
+  document.title = "HealthAI - Intelligent Disease Prediction";
   return (
     <div className="flex flex-col min-h-screen">
       {/* Hero Section */}
