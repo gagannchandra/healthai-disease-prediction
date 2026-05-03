@@ -4,6 +4,7 @@ import { getSymptoms, predictDisease } from '../utils/api';
 import { Mic, Search, X, Loader2, AlertCircle } from 'lucide-react';
 
 const Predict = () => {
+  document.title = "Symptom Checker | HealthAI";
   const [symptoms, setSymptoms] = useState([]);
   const [selectedSymptoms, setSelectedSymptoms] = useState([]);
   const [searchTerm, setSearchTerm] = useState('');
