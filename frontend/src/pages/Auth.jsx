@@ -4,6 +4,7 @@ import { LogIn, UserPlus } from 'lucide-react';
 
 const Auth = () => {
   const [isLogin, setIsLogin] = useState(true);
+  document.title = isLogin ? "Login | HealthAI" : "Sign Up | HealthAI";
   const [formData, setFormData] = useState({ name: '', email: '', password: '' });
   const [error, setError] = useState('');
 
