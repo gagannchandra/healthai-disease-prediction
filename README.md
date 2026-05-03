@@ -37,9 +37,9 @@ HealthAI is a B.Tech Final Year capstone project (AI specialization) that combin
 
 ---
 
-## Live Demo & Screenshots
+## Live Demo 
 
-> _Add your deployment URL and screenshot images here once deployed._
+> Link : https://healthai-disease-prediction.vercel.app/
 
 | Page | Description |
 |---|---|
