@@ -22,7 +22,7 @@
 8. [Setup & Installation](#setup--installation)
 9. [API Reference](#api-reference)
 10. [How It Works](#how-it-works)
-11. [Disclaimer](#disclaimer)
+11. [Disclaimer](#disclaimer) 
 
 ---
 
