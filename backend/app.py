@@ -3,60 +3,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List
+import json
 import joblib
 import numpy as np
 import os
+import re
 
 
-from disease_logic import get_doctor_recommendation, get_chat_response, get_disease_details
-from xgboost import XGBClassifier, XGBRFClassifier
-from sklearn.preprocessing import LabelEncoder
-
-class XGBWrapper:
-    def __init__(self, model_type='rf', **kwargs):
-        if 'device' not in kwargs:
-            kwargs['device'] = os.getenv('DEVICE', 'cpu')
-        if model_type == 'rf':
-            self.model = XGBRFClassifier(**kwargs)
-        else:
-            self.model = XGBClassifier(**kwargs)
-        self.encoder = LabelEncoder()
-        
-    def fit(self, X, y):
-        y_encoded = self.encoder.fit_transform(y)
-        self.classes_ = self.encoder.classes_
-        self.model.fit(X, y_encoded)
-        return self
-        
-    def predict(self, X):
-        preds = self.model.predict(X)
-        return self.encoder.inverse_transform(preds)
-        
-    def predict_proba(self, X):
-        return self.model.predict_proba(X)
-        
-    def get_depth(self):
-        return getattr(self.model, 'max_depth', 0)
-        
-    def get_n_leaves(self):
-        return 0
-        
-    @property
-    def n_estimators(self):
-        return getattr(self.model, 'n_estimators', 1)
-        
-    @property
-    def estimators_(self):
-        class MockTree:
-            def __init__(self, depth):
-                self.max_depth = depth
-        class MockEstimator:
-            def __init__(self, depth):
-                self.tree_ = MockTree(depth)
-        return [MockEstimator(self.get_depth())]
-
-import __main__
-__main__.XGBWrapper = XGBWrapper
+from disease_logic import get_doctor_recommendation, get_chat_response, get_disease_details, is_urgent
 
 app = FastAPI(title="Disease Prediction API", version="1.0")
 
@@ -74,18 +28,38 @@ base_dir = os.path.dirname(os.path.abspath(__file__))
 models_dir = os.path.join(base_dir, 'models')
 
 try:
-    dt_model = joblib.load(os.path.join(models_dir, 'dt_model.joblib'))
-    rf_model = joblib.load(os.path.join(models_dir, 'rf_model.joblib'))
-    nb_model = joblib.load(os.path.join(models_dir, 'nb_model.joblib'))
+    with open(os.path.join(models_dir, 'model_config.json')) as f:
+        model_config = json.load(f)
+    models = {name: joblib.load(os.path.join(models_dir, fname))
+              for name, fname in model_config['models'].items()}
+    ensemble_weights = model_config['weights']
+    display_names = model_config['display_names']
+    symptom_names = model_config.get('symptom_names', {})
+    symptom_aliases = model_config.get('symptom_aliases', {})
+    symptom_implications = model_config.get('symptom_implications', {})
     symptoms_list = joblib.load(os.path.join(models_dir, 'symptoms_list.joblib'))
     diseases_list = joblib.load(os.path.join(models_dir, 'diseases_list.joblib'))
+    symptom_index = {s: i for i, s in enumerate(symptoms_list)}
+    classes = next(iter(models.values())).classes_
+    if any(list(m.classes_) != list(classes) for m in models.values()):
+        raise ValueError("Models were trained with different class orderings.")
     print("Models loaded successfully.")
 except Exception as e:
     print(f"Error loading models. Did you run train.py? Error: {e}")
-    # Initialize empty defaults for graceful startup failure reporting
-    dt_model = rf_model = nb_model = None
+    models = {}
     symptoms_list = []
     diseases_list = []
+
+
+def normalize_symptom(symptom):
+    """Map a client symptom id (including legacy ids such as 'diarrhoea') to a model feature."""
+    sid = re.sub(r'[^a-z0-9]+', '_', str(symptom).strip().lower()).strip('_')
+    return symptom_aliases.get(sid, sid)
+
+
+def display_name(disease):
+    return display_names.get(disease, disease)
+
 
 class SymptomInput(BaseModel):
     symptoms: List[str]
@@ -111,65 +85,56 @@ def get_symptoms():
     # Return formatted symptom names (replace underscores with spaces)
 
     # Mapping to keep track of original keys
-    return {"symptoms": [{"id": s, "name": s.replace('_', ' ').title()} for s in symptoms_list]}
+    # Merged synonyms (e.g. "breathlessness" -> shortness_of_breath) stay searchable as aliases.
+    aliases = {}
+    for old, new in symptom_aliases.items():
+        if not any(ch.isdigit() for ch in old):
+            aliases.setdefault(new, []).append(old.replace('_', ' '))
+    symptoms = [{"id": s, "name": symptom_names.get(s, s.replace('_', ' ').capitalize()), "aliases": aliases.get(s, [])}
+                for s in symptoms_list]
+    return {"symptoms": sorted(symptoms, key=lambda s: s["name"].lower())}
 
 @app.post("/api/predict")
 def predict_disease(input_data: SymptomInput):
     if not input_data.symptoms:
         raise HTTPException(status_code=400, detail="No symptoms provided.")
         
-    if dt_model is None or rf_model is None or nb_model is None:
+    if not models:
         raise HTTPException(status_code=500, detail="Models are not loaded.")
 
-    # Create input vector
-    input_vector = np.zeros(len(symptoms_list))
-    for symptom in input_data.symptoms:
-        if symptom in symptoms_list:
-            index = symptoms_list.index(symptom)
-            input_vector[index] = 1
+    known = {normalize_symptom(s) for s in input_data.symptoms} & symptom_index.keys()
+    unrecognized = [s for s in input_data.symptoms if normalize_symptom(s) not in symptom_index]
+    if not known:
+        raise HTTPException(status_code=400, detail="None of the provided symptoms are recognized.")
+    # Same specific -> general symptom links that train.py applied to the data.
+    known |= {symptom_implications[s] for s in known if s in symptom_implications}
 
-    input_vector = input_vector.reshape(1, -1)
+    input_vector = np.zeros((1, len(symptoms_list)), dtype=np.float32)
+    input_vector[0, [symptom_index[s] for s in known]] = 1
 
-    # Predictions
-    dt_pred = dt_model.predict(input_vector)[0]
-    rf_pred = rf_model.predict(input_vector)[0]
-    nb_pred = nb_model.predict(input_vector)[0]
+    probs = {name: model.predict_proba(input_vector)[0] for name, model in models.items()}
+    # Weighted soft vote; weights are chosen on a validation split by train.py.
+    ensemble_probs = sum(ensemble_weights[name] * p for name, p in probs.items())
 
-    # Get probabilities to determine confidence
-    rf_probs = rf_model.predict_proba(input_vector)[0]
-    nb_probs = nb_model.predict_proba(input_vector)[0]
-    dt_probs = dt_model.predict_proba(input_vector)[0]
-
-    # Combine probabilities for a final ensemble score
-    avg_probs = (rf_probs + nb_probs + dt_probs) / 3
-    
-    # Get top 3 indices
-    top_3_indices = np.argsort(avg_probs)[-3:][::-1]
-    
-    top_3_diseases = []
-    for idx in top_3_indices:
-        if avg_probs[idx] > 0:
-            top_3_diseases.append({
-                "disease": dt_model.classes_[idx], # classes should be same across models
-                "confidence": round(float(avg_probs[idx]) * 100, 2)
-            })
-
-    # The most likely disease based on voting (if models disagree, take the highest average probability)
-    final_prediction = top_3_diseases[0]['disease']
+    top_3_diseases = [
+        {"disease": display_name(classes[idx]), "confidence": round(float(ensemble_probs[idx]) * 100, 2),
+         "urgent": is_urgent(classes[idx])}
+        for idx in np.argsort(ensemble_probs)[::-1][:3]
+    ]
+    top_class = classes[int(np.argmax(ensemble_probs))]
+    final_prediction = display_name(top_class)
     confidence = top_3_diseases[0]['confidence']
 
-    doctor_info = get_doctor_recommendation(final_prediction)
-    disease_details = get_disease_details(final_prediction)
+    doctor_info = get_doctor_recommendation(top_class)
+    disease_details = get_disease_details(top_class)
 
     return {
         "final_prediction": final_prediction,
         "confidence": confidence,
+        "urgent": is_urgent(top_class),
         "top_3": top_3_diseases,
-        "model_predictions": {
-            "Random Forest": rf_pred,
-            "Decision Tree": dt_pred,
-            "Naive Bayes": nb_pred
-        },
+        "model_predictions": {name: display_name(classes[int(np.argmax(p))]) for name, p in probs.items()},
+        "unrecognized_symptoms": unrecognized,
         "doctor_recommendation": doctor_info,
         "disease_details": disease_details
     }
