@@ -1,78 +1,50 @@
 --- Disease Prediction System: Comprehensive Metrics Report ---
-Generated at: 2026-05-03 08:13:16
+Generated at: 2026-09-27T16:05:12
 
-=== DATASET METRICS ===
-Total number of samples: 102238 rows
-Number of diseases (classes): 141
-Number of symptoms (features): 343
-Samples per disease (class distribution): min 150 / mean 725.1 / max 1219
-Train size (%): 80.0%
-Test size (%): 20.0%
-Validation size: N/A (Using Test split)
-Random state (for reproducibility): 42
+=== DATASET ===
+Samples after de-duplication: 101326 (912 exact duplicates removed)
+Data cleaning: 19 duplicate/synonym symptom columns merged, 22 specific->general symptom links, 5 disease names fixed or merged
+Diseases (classes): 131  |  Symptoms (features): 324
+Samples per disease: min 100 / mean 773.5 / max 1357
+Split: 81060 train / 20266 test (stratified 80/20, random_state=42)
+Ensemble weights: chosen on 5-fold out-of-fold predictions over the training split
 
-=== INDIVIDUAL MODEL PERFORMANCE ===
+=== TEST-SET PERFORMANCE (macro-averaged over diseases) ===
+Model                   Accuracy    Top-3  Sensitivity  Specificity  Precision       F1  LogLoss
+------------------------------------------------------------------------------------------------
+Logistic Regression       89.25%   98.43%       90.18%       99.92%     90.37%   90.09%    0.231
+Random Forest             87.65%   97.75%       85.68%       99.90%     88.54%   86.39%    0.655
+Naive Bayes               88.99%   98.45%       89.75%       99.92%     89.18%   89.24%    0.206
+Ensemble                  89.32%   98.46%       90.27%       99.92%     90.42%   90.14%    0.217
 
-Decision Tree:
-  Training Accuracy: 95.93%
-  Testing Accuracy:  86.62%
-  Training accuracy vs Testing accuracy diff: 9.30%
-  Accuracy of each individual model: 86.62%
-  Precision:         87.64%
-  Recall:            87.86%
-  F1-Score:          87.69%
-  True Positive (TP):  17713
-  False Positive (FP): 2735
-  False Negative (FN): 2735
-  True Negative (TN):  2859985
-  Training time (in seconds): 108.5103
-  Time per prediction: 0.0702 ms
-  Confidence score of prediction (%): 95.42%
-  Model complexity:  Depth: 0, Leaves: 0
-  Memory usage (optional but impressive): 55.72 MB
+Sensitivity = recall = TP/(TP+FN): share of patients WITH a disease that the model identifies.
+Specificity = TN/(TN+FP): share of patients WITHOUT a disease that the model correctly rules out.
+Top-3 accuracy: true disease appears among the three suggestions shown to the user.
 
-Random Forest:
-  Training Accuracy: 82.36%
-  Testing Accuracy:  81.09%
-  Training accuracy vs Testing accuracy diff: 1.27%
-  Accuracy of each individual model: 81.09%
-  Precision:         67.51%
-  Recall:            69.73%
-  F1-Score:          66.68%
-  True Positive (TP):  16581
-  False Positive (FP): 3867
-  False Negative (FN): 3867
-  True Negative (TN):  2858853
-  Training time (in seconds): 54.7146
-  Time per prediction: 0.0663 ms
-  Confidence score of prediction (%): 93.37%
-  Model complexity:  Trees: 100, Depth: None
-  Memory usage (optional but impressive): 25.85 MB
+=== MODEL DETAILS ===
+Logistic Regression    weight 0.67 | 5-fold CV acc 89.28% (+/- 0.19%) | train acc 90.54% | train time 15.8s | 0.0035 ms/prediction
+Random Forest          weight 0.00 | 5-fold CV acc 88.01% (+/- 0.30%) | train acc 90.23% | train time 19.5s | 0.0307 ms/prediction
+Naive Bayes            weight 0.33 | 5-fold CV acc 89.30% (+/- 0.22%) | train acc 89.85% | train time 0.7s | 0.0071 ms/prediction
+Ensemble out-of-fold accuracy: 89.40%
 
-Naive Bayes:
-  Training Accuracy: 89.42%
-  Testing Accuracy:  87.89%
-  Training accuracy vs Testing accuracy diff: 1.53%
-  Accuracy of each individual model: 87.89%
-  Precision:         82.81%
-  Recall:            81.56%
-  F1-Score:          81.30%
-  True Positive (TP):  17972
-  False Positive (FP): 2476
-  False Negative (FN): 2476
-  True Negative (TN):  2860244
-  Training time (in seconds): 0.6343
-  Time per prediction: 0.1879 ms
-  Confidence score of prediction (%): 94.70%
-  Model complexity:  N/A
-  Memory usage (optional but impressive): 0.77 MB
+=== LOWEST-SENSITIVITY DISEASES (ensemble) ===
+  Skin pigmentation disorder                         54.66%   most confused with: Skin polyp
+  Noninfectious gastroenteritis                      55.60%   most confused with: Infectious gastroenteritis
+  Pneumonia                                          67.53%   most confused with: Acute bronchospasm
+  Skin polyp                                         68.94%   most confused with: Skin pigmentation disorder
+  Actinic keratosis                                  70.37%   most confused with: Skin polyp
+  Gallstone                                          70.99%   most confused with: Cholecystitis
+  Acute bronchitis                                   74.49%   most confused with: Chronic obstructive pulmonary disease (COPD)
+  Spinal stenosis                                    75.10%   most confused with: Degenerative disc disease
+  Eczema                                             75.52%   most confused with: Skin polyp
+  Personality disorder                               76.07%   most confused with: Schizophrenia
+  Schizophrenia                                      77.16%   most confused with: Personality disorder
+  Cholecystitis                                      77.18%   most confused with: Gallstone
+  Spondylosis                                        77.37%   most confused with: Degenerative disc disease
+  Acute bronchospasm                                 77.78%   most confused with: Chronic obstructive pulmonary disease (COPD)
+  Vaginal cyst                                       78.60%   most confused with: Threatened pregnancy
 
-=== ENSEMBLE SYSTEM PERFORMANCE ===
-Accuracy after combining: 87.84%
-Improvement (%): -0.05%
-
-=== SYSTEM AND SCALABILITY METRICS ===
-API response time: 5.32 ms
-Number of users supported (estimate): 187 requests/sec per core
-Top-3 disease suggestions instead of one: Supported by API (/predict returns top_3)
-Doctor recommendation accuracy (logic-based): 100.0% (Deterministic mapping based on predicted class)
+Diseases with sensitivity >= 90%: 85 / 131
+Diseases with sensitivity  < 70%: 4 / 131
+Low-sensitivity diseases are mostly clinically similar pairs (e.g. infectious vs non-infectious
+gastroenteritis) that cannot be separated by symptoms alone; the top-3 list covers these cases.

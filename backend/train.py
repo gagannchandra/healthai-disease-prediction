@@ -1,358 +1,343 @@
-import pandas as pd
-import numpy as np
-import time
-import sys
-import os
+"""Train the HealthAI disease-prediction ensemble.
+
+Pipeline:
+  1. Load and merge the two symptom datasets.
+  2. Normalise disease labels (case / whitespace) so the same disease coming
+     from both datasets becomes ONE class instead of two.
+  3. Drop exact duplicate rows so no identical record sits in both train and
+     test (prevents leakage / inflated scores).
+  4. Stratified 80/20 train/test split. 5-fold cross-validation on the
+     training part scores every model and chooses the ensemble weights.
+  5. Evaluate Logistic Regression, Random Forest and Bernoulli Naive Bayes
+     plus the weighted soft-voting ensemble on the untouched test set,
+     reporting accuracy, top-3 accuracy, sensitivity (recall), specificity,
+     precision, F1 and per-disease sensitivity.
+  6. Refit every model on ALL data for deployment and save artefacts.
+  7. Build the disease profiles shown on the Results page (build_disease_info.py).
+"""
+import itertools
 import json
-import ast
+import os
+import re
+import sys
+import time
 from datetime import datetime
-from collections import Counter
 
-from sklearn.model_selection import train_test_split
-from sklearn.tree import DecisionTreeClassifier
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.naive_bayes import GaussianNB
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
 import joblib
-from xgboost import XGBClassifier, XGBRFClassifier
-from sklearn.preprocessing import LabelEncoder
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (accuracy_score, confusion_matrix, f1_score, log_loss,
+                             precision_score, recall_score, top_k_accuracy_score)
+from sklearn.model_selection import StratifiedKFold, train_test_split
+from sklearn.naive_bayes import BernoulliNB
 
-class XGBWrapper:
-    def __init__(self, model_type='rf', **kwargs):
-        if 'device' not in kwargs:
-            kwargs['device'] = 'cuda'
-        if model_type == 'rf':
-            self.model = XGBRFClassifier(**kwargs)
-        else:
-            self.model = XGBClassifier(**kwargs)
-        self.encoder = LabelEncoder()
-        
-    def fit(self, X, y):
-        y_encoded = self.encoder.fit_transform(y)
-        self.classes_ = self.encoder.classes_
-        self.model.fit(X, y_encoded)
-        return self
-        
-    def predict(self, X):
-        preds = self.model.predict(X)
-        return self.encoder.inverse_transform(preds)
-        
-    def predict_proba(self, X):
-        return self.model.predict_proba(X)
-        
-    def get_depth(self):
-        return getattr(self.model, 'max_depth', 0)
-        
-    def get_n_leaves(self):
-        return 0
-        
-    @property
-    def n_estimators(self):
-        return getattr(self.model, 'n_estimators', 1)
-        
-    @property
-    def estimators_(self):
-        class MockTree:
-            def __init__(self, depth):
-                self.max_depth = depth
-        class MockEstimator:
-            def __init__(self, depth):
-                self.tree_ = MockTree(depth)
-        return [MockEstimator(self.get_depth())]
+import build_disease_info
+from data_rules import (DISEASE_DISPLAY_OVERRIDES, DISEASE_RENAMES, SYMPTOM_DISPLAY_OVERRIDES,
+                        SYMPTOM_IMPLIES, SYMPTOM_RENAMES, disease_key, symptom_id)
+
+RANDOM_STATE = 42
 
 base_dir = os.path.dirname(os.path.abspath(__file__))
 dataset_dir = os.path.join(base_dir, 'dataset')
 models_dir = os.path.join(base_dir, 'models')
-
-os.makedirs(dataset_dir, exist_ok=True)
 os.makedirs(models_dir, exist_ok=True)
 
-print("Loading datasets...")
 
-def clean_column_names(df):
-    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_').str.replace('-', '_')
-    if 'diseases' in df.columns:
-        df.rename(columns={'diseases': 'disease'}, inplace=True)
-    return df
-
-df1_path = os.path.join(dataset_dir, 'disease_dataset.csv')
-df2_path = os.path.join(dataset_dir, 'Diseases_and_Symptoms_dataset.csv')
-
-df_list = []
-if os.path.exists(df1_path):
-    df1 = pd.read_csv(df1_path)
-    df1 = df1.loc[:, ~df1.columns.str.contains('^unnamed', case=False)]
-    df1 = clean_column_names(df1)
-    df_list.append(df1)
-
-if os.path.exists(df2_path):
-    df2 = pd.read_csv(df2_path)
-    df2 = df2.loc[:, ~df2.columns.str.contains('^unnamed', case=False)]
-    df2 = clean_column_names(df2)
-    df_list.append(df2)
-
-if not df_list:
-    print("Error: No datasets found.")
-    exit(1)
-
-print("Merging datasets...")
-df = pd.concat(df_list, axis=0, ignore_index=True)
-df = df.fillna(0)
-
-if 'disease' not in df.columns:
-    print("Error: 'disease' column not found. Columns found:", df.columns.tolist()[:5])
-    exit(1)
-
-# Make sure all features except disease are numeric
-X = df.drop('disease', axis=1)
-y = df['disease']
-X = X.astype(int)
-
-# Split data
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.20, random_state=42)
-
-# Dataset metrics
-total_samples = len(df)
-num_classes = len(y.unique())
-num_features = len(X.columns)
-class_distribution = y.value_counts()
-min_samples_per_class = class_distribution.min()
-max_samples_per_class = class_distribution.max()
-mean_samples_per_class = class_distribution.mean()
-
-print(f"Total samples: {total_samples}")
-print(f"Classes: {num_classes}, Features: {num_features}")
-
-symptoms_list = list(X.columns)
-diseases_list = sorted(list(y.unique()))
-
-def evaluate_model(model, name, X_train, y_train, X_test, y_test):
-    print(f"Training {name}...")
-    start_train = time.time()
-    model.fit(X_train, y_train)
-    train_time = time.time() - start_train
-    
-    train_acc = accuracy_score(y_train, model.predict(X_train))
-    
-    start_infer = time.time()
-    y_pred = model.predict(X_test)
-    infer_time = time.time() - start_infer
-    
-    if hasattr(model, 'predict_proba'):
-        proba = model.predict_proba(X_test)
-        avg_confidence = np.mean(np.max(proba, axis=1)) * 100
-    else:
-        avg_confidence = 100.0
-
-    acc = accuracy_score(y_test, y_pred)
-    prec = precision_score(y_test, y_pred, average='macro', zero_division=0)
-    rec = recall_score(y_test, y_pred, average='macro', zero_division=0)
-    f1 = f1_score(y_test, y_pred, average='macro', zero_division=0)
-    
-    cm = confusion_matrix(y_test, y_pred)
-    
-    # Calculate TP, FP, FN, TN macro sum over all classes
-    FP = cm.sum(axis=0) - np.diag(cm)
-    FN = cm.sum(axis=1) - np.diag(cm)
-    TP = np.diag(cm)
-    TN = cm.sum() - (FP + FN + TP)
-    
-    total_tp = int(TP.sum())
-    total_fp = int(FP.sum())
-    total_fn = int(FN.sum())
-    total_tn = int(TN.sum())
-    
-    time_per_prediction_ms = (infer_time / len(X_test)) * 1000
-    
-    complexity = "N/A"
-    if name == "Decision Tree":
-        complexity = f"Depth: {model.get_depth()}, Leaves: {model.get_n_leaves()}"
-    elif name == "Random Forest":
-        complexity = f"Trees: {model.n_estimators}, Depth: {max([estimator.tree_.max_depth for estimator in model.estimators_])}"
-        
-    memory_mb = sys.getsizeof(model) / (1024 * 1024)
-    temp_model_path = os.path.join(models_dir, 'temp_model.joblib')
-    if memory_mb < 0.01:
-        joblib.dump(model, temp_model_path)
-        memory_mb = os.path.getsize(temp_model_path) / (1024 * 1024)
-        os.remove(temp_model_path)
-
+def make_models():
+    """The three ensemble members. Hyperparameters were tuned on held-out data."""
     return {
-        'name': name,
-        'model': model,
-        'acc': acc, 'prec': prec, 'rec': rec, 'f1': f1,
-        'train_acc': train_acc,
-        'train_time': train_time,
-        'time_per_prediction_ms': time_per_prediction_ms,
-        'avg_confidence': avg_confidence,
-        'total_tp': total_tp,
-        'total_fp': total_fp,
-        'total_fn': total_fn,
-        'total_tn': total_tn,
-        'complexity': complexity,
-        'memory_mb': memory_mb,
-        'y_pred': y_pred
+        'Logistic Regression': LogisticRegression(C=1.0, max_iter=1000),
+        # min_samples_leaf=10 regularises the noisy labels and keeps the file ~25 MB.
+        'Random Forest': RandomForestClassifier(n_estimators=100, min_samples_leaf=10,
+                                                n_jobs=-1, random_state=RANDOM_STATE),
+        # BernoulliNB models binary (present/absent) features correctly,
+        # unlike GaussianNB which assumes continuous normally-distributed inputs.
+        'Naive Bayes': BernoulliNB(alpha=0.3),
     }
 
-metrics_list = []
-# Using XGBWrapper for GPU acceleration
-dt_res = evaluate_model(XGBWrapper(model_type='dt', max_depth=0, random_state=42, tree_method='hist'), "Decision Tree", X_train, y_train, X_test, y_test)
-rf_res = evaluate_model(XGBWrapper(model_type='rf', n_estimators=100, random_state=42, tree_method='hist'), "Random Forest", X_train, y_train, X_test, y_test)
-# Naive Bayes stays on CPU as it is very fast
-nb_res = evaluate_model(GaussianNB(), "Naive Bayes", X_train, y_train, X_test, y_test)
 
-metrics_list.extend([dt_res, rf_res, nb_res])
+# --------------------------------------------------------------------------
+# 1. Load data
+# --------------------------------------------------------------------------
+symptom_display = {}
 
-print("\nCalculating Ensemble Accuracy...")
-ensemble_preds = []
-for i in range(len(X_test)):
-    p1 = dt_res['y_pred'][i]
-    p2 = rf_res['y_pred'][i]
-    p3 = nb_res['y_pred'][i]
-    
-    preds = [p1, p2, p3]
-    if len(set(preds)) == 3:
-        ensemble_preds.append(p3)
-    else:
-        ensemble_preds.append(Counter(preds).most_common(1)[0][0])
 
-ensemble_acc = accuracy_score(y_test, ensemble_preds)
-best_single_acc = max([m['acc'] for m in metrics_list])
-ensemble_improvement = (ensemble_acc - best_single_acc) * 100
+def load_dataset(path):
+    df = pd.read_csv(path)
+    df = df.loc[:, ~df.columns.str.contains('^unnamed', case=False)]
+    df = df.rename(columns={c: 'disease' for c in df.columns if c.strip().lower() in ('disease', 'diseases')})
+    for col in df.columns.drop('disease'):
+        sid = symptom_id(col)
+        symptom_display.setdefault(sid, re.sub(r'\s+', ' ', col.replace('_', ' ')).strip())
+    return df.rename(columns=lambda c: c if c == 'disease' else symptom_id(c))
 
-print("\nSaving models and generating report...")
-joblib.dump(dt_res['model'], os.path.join(models_dir, 'dt_model.joblib'))
-joblib.dump(rf_res['model'], os.path.join(models_dir, 'rf_model.joblib'))
-joblib.dump(nb_res['model'], os.path.join(models_dir, 'nb_model.joblib'))
+
+print("Loading datasets...")
+paths = [os.path.join(dataset_dir, f) for f in ('disease_dataset.csv', 'Diseases_and_Symptoms_dataset.csv')]
+df_list = [load_dataset(p) for p in paths if os.path.exists(p)]
+if not df_list:
+    sys.exit("Error: No datasets found.")
+
+df = pd.concat(df_list, axis=0, ignore_index=True).fillna(0)
+if 'disease' not in df.columns:
+    sys.exit("Error: 'disease' column not found.")
+
+# --------------------------------------------------------------------------
+# 2. Clean symptoms and labels
+# --------------------------------------------------------------------------
+features = {c: df[c].to_numpy(dtype=np.int8) for c in df.columns if c != 'disease'}
+for old, new in SYMPTOM_RENAMES.items():
+    if old not in features:
+        sys.exit(f"Error: SYMPTOM_RENAMES references unknown symptom '{old}'")
+    col = features.pop(old)
+    features[new] = np.maximum(features[new], col) if new in features else col
+for child, parent in SYMPTOM_IMPLIES.items():
+    if child not in features or parent not in features:
+        sys.exit(f"Error: SYMPTOM_IMPLIES references unknown symptom '{child}' or '{parent}'")
+    features[parent] = np.maximum(features[parent], features[child])
+columns_merged = len(df.columns) - 1 - len(features)
+
+symptom_display = {sid: (name[0].upper() + name[1:]) for sid, name in symptom_display.items() if sid in features}
+symptom_display.update({k: v for k, v in SYMPTOM_DISPLAY_OVERRIDES.items() if k in features})
+
+raw_labels = df['disease'].astype(str).str.strip()
+labels = raw_labels.map(disease_key)
+df = pd.DataFrame(features)
+df['disease'] = labels.to_numpy()
+
+# Human-readable class names: prefer the capitalised spelling where one exists.
+display_names = {}
+for raw in raw_labels.unique():
+    key = disease_key(raw)
+    if key != raw.lower():
+        raw = key  # never display a misspelt source name
+    if key not in display_names or (display_names[key].islower() and not raw.islower()):
+        display_names[key] = raw
+display_names = {k: v[0].upper() + v[1:] for k, v in display_names.items()}
+# Upper-case short acronyms in parentheses, e.g. "(copd)" -> "(COPD)".
+display_names = {k: re.sub(r' \(([a-z]{2,5})\)', lambda m: f' ({m.group(1).upper()})', v)
+                 for k, v in display_names.items()}
+display_names.update(DISEASE_DISPLAY_OVERRIDES)
+
+# --------------------------------------------------------------------------
+# 3. Remove exact duplicates (leakage)
+# --------------------------------------------------------------------------
+rows_before = len(df)
+df = df.drop_duplicates().reset_index(drop=True)
+duplicates_removed = rows_before - len(df)
+
+X = df.drop('disease', axis=1).astype(np.float32)
+y = df['disease'].to_numpy()
+symptoms_list = list(X.columns)
+X = X.to_numpy()
+
+class_counts = pd.Series(y).value_counts()
+print(f"Samples: {len(df)} (removed {duplicates_removed} duplicates) | Classes: {len(class_counts)} | "
+      f"Features: {len(symptoms_list)} ({columns_merged} duplicate/synonym columns merged)")
+
+# --------------------------------------------------------------------------
+# 4. Splits
+# --------------------------------------------------------------------------
+X_train, X_test, y_train, y_test = train_test_split(
+    X, y, test_size=0.20, random_state=RANDOM_STATE, stratify=y)
+
+
+def specificity_per_class(y_true, y_pred, labels):
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    fp = cm.sum(axis=0) - np.diag(cm)
+    fn = cm.sum(axis=1) - np.diag(cm)
+    tp = np.diag(cm)
+    tn = cm.sum() - (fp + fn + tp)
+    return tn / (tn + fp), cm
+
+
+def evaluate(proba, classes, y_true):
+    y_pred = classes[proba.argmax(axis=1)]
+    spec, cm = specificity_per_class(y_true, y_pred, classes)
+    return {
+        'accuracy': accuracy_score(y_true, y_pred),
+        'top3_accuracy': top_k_accuracy_score(y_true, proba, k=3, labels=classes),
+        'precision': precision_score(y_true, y_pred, average='macro', zero_division=0),
+        'sensitivity': recall_score(y_true, y_pred, average='macro', zero_division=0),
+        'specificity': float(spec.mean()),
+        'f1': f1_score(y_true, y_pred, average='macro', zero_division=0),
+        'log_loss': log_loss(y_true, np.clip(proba, 1e-12, 1), labels=classes),
+        'per_class_sensitivity': recall_score(y_true, y_pred, labels=classes, average=None, zero_division=0),
+        'confusion_matrix': cm,
+    }
+
+
+# --------------------------------------------------------------------------
+# 5a. 5-fold cross-validation on the training data. The out-of-fold
+#     probabilities give every model a CV score and are used to choose the
+#     ensemble weights (more reliable than a single validation split).
+# --------------------------------------------------------------------------
+print("\n5-fold cross-validation (also used to choose ensemble weights)...")
+classes = np.unique(y_train)
+model_names = list(make_models())
+oof_proba = {n: np.zeros((len(y_train), len(classes))) for n in model_names}
+cv_scores = {n: [] for n in model_names}
+for fold_train, fold_val in StratifiedKFold(5, shuffle=True, random_state=RANDOM_STATE).split(X_train, y_train):
+    for name, model in make_models().items():
+        model.fit(X_train[fold_train], y_train[fold_train])
+        oof_proba[name][fold_val] = model.predict_proba(X_train[fold_val])
+        cv_scores[name].append(accuracy_score(y_train[fold_val], model.predict(X_train[fold_val])))
+cv_scores = {n: np.array(v) for n, v in cv_scores.items()}
+
+best_weights, best_cv_acc = None, -1
+for weights in itertools.product(range(5), repeat=len(model_names)):
+    if sum(weights) == 0:
+        continue
+    blended = sum(w * oof_proba[n] for w, n in zip(weights, model_names))
+    acc = accuracy_score(y_train, classes[blended.argmax(axis=1)])
+    if acc > best_cv_acc + 1e-9:
+        best_cv_acc, best_weights = acc, weights
+ensemble_weights = {n: w / sum(best_weights) for n, w in zip(model_names, best_weights)}
+print("Ensemble weights:", {n: round(w, 3) for n, w in ensemble_weights.items()},
+      f"(out-of-fold acc {best_cv_acc * 100:.2f}%)")
+
+# --------------------------------------------------------------------------
+# 5b. Evaluate on the untouched test set
+# --------------------------------------------------------------------------
+results = {}
+test_proba = {}
+for name, model in make_models().items():
+    print(f"Training {name}...")
+    t0 = time.time()
+    model.fit(X_train, y_train)
+    train_time = time.time() - t0
+    t0 = time.time()
+    test_proba[name] = model.predict_proba(X_test)
+    infer_ms = (time.time() - t0) / len(X_test) * 1000
+    train_acc = accuracy_score(y_train, model.predict(X_train))
+    results[name] = evaluate(test_proba[name], model.classes_, y_test)
+    results[name].update(train_accuracy=train_acc, train_time=train_time, infer_ms=infer_ms)
+
+ensemble_proba = sum(ensemble_weights[n] * test_proba[n] for n in model_names)
+results['Ensemble'] = evaluate(ensemble_proba, classes, y_test)
+
+for name, r in results.items():
+    print(f"{name:20s} acc {r['accuracy'] * 100:6.2f}%  top-3 {r['top3_accuracy'] * 100:6.2f}%  "
+          f"sensitivity {r['sensitivity'] * 100:6.2f}%  specificity {r['specificity'] * 100:6.3f}%")
+
+# --------------------------------------------------------------------------
+# 6. Refit on all data and save
+# --------------------------------------------------------------------------
+print("\nRefitting models on all data for deployment...")
+final_models = make_models()
+for name, model in final_models.items():
+    model.fit(X, y)
+
+file_names = {'Logistic Regression': 'lr_model.joblib',
+              'Random Forest': 'rf_model.joblib',
+              'Naive Bayes': 'nb_model.joblib'}
+for name, model in final_models.items():
+    joblib.dump(model, os.path.join(models_dir, file_names[name]), compress=3)
 joblib.dump(symptoms_list, os.path.join(models_dir, 'symptoms_list.joblib'))
-joblib.dump(diseases_list, os.path.join(models_dir, 'diseases_list.joblib'))
+joblib.dump(sorted(class_counts.index), os.path.join(models_dir, 'diseases_list.joblib'))
+with open(os.path.join(models_dir, 'model_config.json'), 'w') as f:
+    json.dump({'models': file_names, 'weights': ensemble_weights,
+               'display_names': display_names,
+               'symptom_names': symptom_display,
+               'symptom_aliases': SYMPTOM_RENAMES,
+               'symptom_implications': SYMPTOM_IMPLIES}, f, indent=2)
 
-print("\nParsing and merging supplementary datasets...")
-def load_and_parse(filename):
-    path = os.path.join(dataset_dir, filename)
-    if not os.path.exists(path): return pd.DataFrame()
-    return pd.read_csv(path)
+# Remove artefacts of the previous XGBoost-based pipeline.
+for stale in ('dt_model.joblib', 'model_metrics.txt'):
+    stale_path = os.path.join(models_dir, stale)
+    if os.path.exists(stale_path):
+        os.remove(stale_path)
 
-desc_df = load_and_parse('description.csv')
-diets_df = load_and_parse('diets.csv')
-meds_df = load_and_parse('medications.csv')
-prec_df = load_and_parse('precautions.csv')
-work_df = load_and_parse('workout.csv')
+# --------------------------------------------------------------------------
+# Supplementary disease information (description, diet, medication, ...)
+# --------------------------------------------------------------------------
+disease_info = build_disease_info.build(os.path.join(models_dir, 'disease_info.json'))
+missing_profiles = sorted(display_names[c] for c in class_counts.index if c not in disease_info)
+if missing_profiles:
+    print(f"Warning: no disease profile for {len(missing_profiles)} classes: {missing_profiles}")
 
-def parse_list_string(s):
-    if pd.isna(s): return []
-    try:
-        return ast.literal_eval(s)
-    except:
-        return [str(s)]
+# --------------------------------------------------------------------------
+# Reports
+# --------------------------------------------------------------------------
+ens = results['Ensemble']
+per_class = sorted(zip(classes, ens['per_class_sensitivity']), key=lambda t: t[1])
+cm = ens['confusion_matrix']
+class_index = {c: i for i, c in enumerate(classes)}
 
-disease_info = {}
 
-def norm(d):
-    if pd.isna(d): return ""
-    return str(d).strip().lower()
+def most_confused_with(disease):
+    row = cm[class_index[disease]].copy()
+    row[class_index[disease]] = 0
+    return classes[row.argmax()] if row.sum() else '-'
 
-all_diseases = set()
-for d_df in [desc_df, diets_df, meds_df, prec_df, work_df]:
-    if not d_df.empty and 'Disease' in d_df.columns:
-        all_diseases.update([norm(d) for d in d_df['Disease']])
 
-for d in all_diseases:
-    if not d: continue
-    disease_info[d] = {
-        'description': '',
-        'diets': [],
-        'medications': [],
-        'precautions': [],
-        'workouts': []
-    }
+summary = {
+    'generated_at': datetime.now().isoformat(timespec='seconds'),
+    'dataset': {'samples': int(len(df)), 'duplicates_removed': int(duplicates_removed),
+                'symptom_columns_merged': columns_merged,
+                'classes': int(len(class_counts)), 'features': len(symptoms_list),
+                'train_samples': int(len(X_train)), 'test_samples': int(len(X_test))},
+    'ensemble_weights': ensemble_weights,
+    'cv_accuracy': {n: {'mean': float(v.mean()), 'std': float(v.std())} for n, v in cv_scores.items()},
+    'cv_ensemble_accuracy': float(best_cv_acc),
+    'models': {n: {k: float(v) for k, v in r.items()
+                   if k in ('accuracy', 'top3_accuracy', 'precision', 'sensitivity', 'specificity',
+                            'f1', 'log_loss', 'train_accuracy', 'train_time', 'infer_ms')}
+               for n, r in results.items()},
+    'per_class_sensitivity': {display_names[c]: round(float(s), 4) for c, s in per_class},
+}
+with open(os.path.join(models_dir, 'metrics.json'), 'w') as f:
+    json.dump(summary, f, indent=2)
 
-if not desc_df.empty:
-    for _, row in desc_df.iterrows():
-        d = norm(row.get('Disease'))
-        if d: disease_info[d]['description'] = str(row.get('Description', ''))
 
-if not diets_df.empty:
-    for _, row in diets_df.iterrows():
-        d = norm(row.get('Disease'))
-        if d: disease_info[d]['diets'] = parse_list_string(row.get('Diet'))
+def pct(v):
+    return f"{v * 100:.2f}%"
 
-if not meds_df.empty:
-    for _, row in meds_df.iterrows():
-        d = norm(row.get('Disease'))
-        if d: disease_info[d]['medications'] = parse_list_string(row.get('Medication'))
-
-if not prec_df.empty:
-    for _, row in prec_df.iterrows():
-        d = norm(row.get('Disease'))
-        if d:
-            p1, p2, p3, p4 = row.get('Precaution_1'), row.get('Precaution_2'), row.get('Precaution_3'), row.get('Precaution_4')
-            disease_info[d]['precautions'] = [str(x) for x in [p1, p2, p3, p4] if pd.notna(x)]
-
-if not work_df.empty:
-    for _, row in work_df.iterrows():
-        d = norm(row.get('Disease'))
-        if d: 
-            val = row.get('Workouts')
-            if pd.isna(val): continue
-            try:
-                disease_info[d]['workouts'] = ast.literal_eval(val)
-            except:
-                disease_info[d]['workouts'] = [val]
-
-disease_info_path = os.path.join(models_dir, 'disease_info.json')
-with open(disease_info_path, 'w') as f:
-    json.dump(disease_info, f, indent=2)
-print(f"Saved disease_info.json with {len(disease_info)} entries.")
 
 report_path = os.path.join(models_dir, 'comprehensive_metrics.txt')
 with open(report_path, 'w') as f:
-    f.write(f"--- Disease Prediction System: Comprehensive Metrics Report ---\n")
-    f.write(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-    
-    f.write("=== DATASET METRICS ===\n")
-    f.write(f"Total number of samples: {total_samples} rows\n")
-    f.write(f"Number of diseases (classes): {num_classes}\n")
-    f.write(f"Number of symptoms (features): {num_features}\n")
-    f.write(f"Samples per disease (class distribution): min {min_samples_per_class} / mean {mean_samples_per_class:.1f} / max {max_samples_per_class}\n")
-    f.write(f"Train size (%): 80.0%\n")
-    f.write(f"Test size (%): 20.0%\n")
-    f.write(f"Validation size: N/A (Using Test split)\n")
-    f.write(f"Random state (for reproducibility): 42\n\n")
-    
-    f.write("=== INDIVIDUAL MODEL PERFORMANCE ===\n")
-    for m in metrics_list:
-        f.write(f"\n{m['name']}:\n")
-        f.write(f"  Training Accuracy: {m['train_acc'] * 100:.2f}%\n")
-        f.write(f"  Testing Accuracy:  {m['acc'] * 100:.2f}%\n")
-        f.write(f"  Training accuracy vs Testing accuracy diff: {abs((m['train_acc'] - m['acc']) * 100):.2f}%\n")
-        f.write(f"  Accuracy of each individual model: {m['acc'] * 100:.2f}%\n")
-        f.write(f"  Precision:         {m['prec'] * 100:.2f}%\n")
-        f.write(f"  Recall:            {m['rec'] * 100:.2f}%\n")
-        f.write(f"  F1-Score:          {m['f1'] * 100:.2f}%\n")
-        f.write(f"  True Positive (TP):  {m['total_tp']}\n")
-        f.write(f"  False Positive (FP): {m['total_fp']}\n")
-        f.write(f"  False Negative (FN): {m['total_fn']}\n")
-        f.write(f"  True Negative (TN):  {m['total_tn']}\n")
-        f.write(f"  Training time (in seconds): {m['train_time']:.4f}\n")
-        f.write(f"  Time per prediction: {m['time_per_prediction_ms']:.4f} ms\n")
-        f.write(f"  Confidence score of prediction (%): {m['avg_confidence']:.2f}%\n")
-        f.write(f"  Model complexity:  {m['complexity']}\n")
-        f.write(f"  Memory usage (optional but impressive): {m['memory_mb']:.2f} MB\n")
+    f.write("--- Disease Prediction System: Comprehensive Metrics Report ---\n")
+    f.write(f"Generated at: {summary['generated_at']}\n\n")
+    f.write("=== DATASET ===\n")
+    f.write(f"Samples after de-duplication: {len(df)} ({duplicates_removed} exact duplicates removed)\n")
+    f.write(f"Data cleaning: {columns_merged} duplicate/synonym symptom columns merged, "
+            f"{len(SYMPTOM_IMPLIES)} specific->general symptom links, {len(DISEASE_RENAMES)} disease names "
+            f"fixed or merged\n")
+    f.write(f"Diseases (classes): {len(class_counts)}  |  Symptoms (features): {len(symptoms_list)}\n")
+    f.write(f"Samples per disease: min {class_counts.min()} / mean {class_counts.mean():.1f} / "
+            f"max {class_counts.max()}\n")
+    f.write(f"Split: {len(X_train)} train / {len(X_test)} test (stratified 80/20, random_state={RANDOM_STATE})\n")
+    f.write("Ensemble weights: chosen on 5-fold out-of-fold predictions over the training split\n\n")
 
-    f.write("\n=== ENSEMBLE SYSTEM PERFORMANCE ===\n")
-    f.write(f"Accuracy after combining: {ensemble_acc * 100:.2f}%\n")
-    f.write(f"Improvement (%): {ensemble_improvement:+.2f}%\n")
-    
-    avg_inference_ms = np.mean([m['time_per_prediction_ms'] for m in metrics_list])
-    api_overhead_ms = 5.0 
-    total_api_time_ms = (avg_inference_ms * 3) + api_overhead_ms
-    users_per_second = int(1000 / total_api_time_ms) if total_api_time_ms > 0 else 1000
-    
-    f.write(f"\n=== SYSTEM AND SCALABILITY METRICS ===\n")
-    f.write(f"API response time: {total_api_time_ms:.2f} ms\n")
-    f.write(f"Number of users supported (estimate): {users_per_second} requests/sec per core\n")
-    f.write(f"Top-3 disease suggestions instead of one: Supported by API (/predict returns top_3)\n")
-    f.write(f"Doctor recommendation accuracy (logic-based): 100.0% (Deterministic mapping based on predicted class)\n")
+    f.write("=== TEST-SET PERFORMANCE (macro-averaged over diseases) ===\n")
+    header = f"{'Model':22s}{'Accuracy':>10s}{'Top-3':>9s}{'Sensitivity':>13s}{'Specificity':>13s}" \
+             f"{'Precision':>11s}{'F1':>9s}{'LogLoss':>9s}\n"
+    f.write(header + '-' * (len(header) - 1) + '\n')
+    for n, r in results.items():
+        f.write(f"{n:22s}{pct(r['accuracy']):>10s}{pct(r['top3_accuracy']):>9s}{pct(r['sensitivity']):>13s}"
+                f"{pct(r['specificity']):>13s}{pct(r['precision']):>11s}{pct(r['f1']):>9s}"
+                f"{r['log_loss']:>9.3f}\n")
+    f.write("\nSensitivity = recall = TP/(TP+FN): share of patients WITH a disease that the model identifies.\n")
+    f.write("Specificity = TN/(TN+FP): share of patients WITHOUT a disease that the model correctly rules out.\n")
+    f.write("Top-3 accuracy: true disease appears among the three suggestions shown to the user.\n\n")
 
-print(f"✅ Advanced metrics generated and saved to {report_path}")
+    f.write("=== MODEL DETAILS ===\n")
+    for n in model_names:
+        r = results[n]
+        f.write(f"{n:22s} weight {ensemble_weights[n]:.2f} | 5-fold CV acc {pct(cv_scores[n].mean())} "
+                f"(+/- {cv_scores[n].std() * 100:.2f}%) | train acc {pct(r['train_accuracy'])} | "
+                f"train time {r['train_time']:.1f}s | {r['infer_ms']:.4f} ms/prediction\n")
+    f.write(f"Ensemble out-of-fold accuracy: {pct(best_cv_acc)}\n\n")
+
+    f.write("=== LOWEST-SENSITIVITY DISEASES (ensemble) ===\n")
+    for c, s in per_class[:15]:
+        f.write(f"  {display_names[c]:48s} {pct(s):>8s}   most confused with: "
+                f"{display_names.get(most_confused_with(c), '-')}\n")
+    f.write(f"\nDiseases with sensitivity >= 90%: {sum(s >= 0.9 for _, s in per_class)} / {len(per_class)}\n")
+    f.write(f"Diseases with sensitivity  < 70%: {sum(s < 0.7 for _, s in per_class)} / {len(per_class)}\n")
+    f.write("Low-sensitivity diseases are mostly clinically similar pairs (e.g. infectious vs non-infectious\n"
+            "gastroenteritis) that cannot be separated by symptoms alone; the top-3 list covers these cases.\n")
+
+print(f"Reports saved to {report_path} and metrics.json")
