@@ -8,12 +8,32 @@
   }
 }
 
+@layer utilities {
+  .animation-delay-2000 {
+    animation-delay: 2s;
+  }
+}
+
 body {
   @apply font-sans bg-slate-50 text-slate-900 antialiased;
-  font-family: 'Inter', sans-serif;
 }
 
 a, button {
   user-select: none;
   -webkit-user-select: none;
+}
+
+/* Visible keyboard focus everywhere, without affecting mouse clicks. */
+:focus-visible {
+  outline: 2px solid theme('colors.primary.500');
+  outline-offset: 2px;
+}
+
+@media print {
+  body {
+    background: white;
+  }
+  nav, footer {
+    display: none !important;
+  }
 }

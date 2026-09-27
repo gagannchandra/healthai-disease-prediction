@@ -1,231 +1,263 @@
-import React from 'react';
 import { useLocation, Link, Navigate } from 'react-router-dom';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Cell } from 'recharts';
-import { Activity, Stethoscope, ArrowLeft, ExternalLink, AlertTriangle, Shield, Pill, Utensils, Info } from 'lucide-react';
+import {
+  Activity, Stethoscope, ArrowLeft, ExternalLink, AlertTriangle, Shield, Pill, Utensils, Info,
+  Siren, MapPin, RotateCcw, Printer, CheckCircle2, HelpCircle,
+} from 'lucide-react';
+import useDocumentTitle from '../hooks/useDocumentTitle';
+
+const confidenceBand = (score) => {
+  if (score >= 70) return { label: 'High match', tone: 'bg-emerald-100 text-emerald-800', bar: 'bg-emerald-500' };
+  if (score >= 40) return { label: 'Moderate match', tone: 'bg-amber-100 text-amber-800', bar: 'bg-amber-500' };
+  return { label: 'Low match', tone: 'bg-rose-100 text-rose-800', bar: 'bg-rose-500' };
+};
+
+const BAR_COLORS = ['bg-primary-600', 'bg-primary-400', 'bg-slate-400'];
+
+const ProfileList = ({ icon: Icon, title, items, accent, empty }) => (
+  <section className="space-y-3">
+    <h3 className="flex items-center text-sm font-bold text-slate-700 uppercase tracking-wide">
+      <Icon className={`w-4 h-4 mr-2 ${accent}`} aria-hidden="true" />
+      {title}
+    </h3>
+    {items?.length ? (
+      <ul className="space-y-2">
+        {items.map((item, idx) => (
+          <li key={idx} className="flex items-start text-slate-600 text-sm bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+            <span className={`mr-2 ${accent}`} aria-hidden="true">•</span>
+            {item}
+          </li>
+        ))}
+      </ul>
+    ) : (
+      <p className="text-sm text-slate-400">{empty}</p>
+    )}
+  </section>
+);
+
+const specialistLinks = (specialist) => {
+  // "Hepatologist/Gastroenterologist" -> search for the first specialty.
+  const primary = specialist.split('/')[0].trim();
+  const q = encodeURIComponent(primary);
+  const slug = primary.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '');
+  return [
+    { name: 'Practo', href: `https://www.practo.com/search/doctors?results_type=doctor&q=${q}`, icon: ExternalLink },
+    { name: 'Apollo 24|7', href: `https://www.apollo247.com/specialties/${slug}`, icon: ExternalLink },
+    { name: `Find a ${primary} nearby`, href: `https://www.google.com/maps/search/${q}+near+me`, icon: MapPin },
+  ];
+};
 
 const Results = () => {
-  document.title = "Results | HealthAI";
+  useDocumentTitle('Results | HealthAI');
   const location = useLocation();
   const data = location.state?.result;
-
+  const symptoms = location.state?.symptoms || [];
 
   if (!data) {
-    return <Navigate to="/predict" />;
+    return <Navigate to="/predict" replace />;
   }
 
-  const { final_prediction, confidence, top_3, model_predictions, doctor_recommendation, disease_details } = data;
-
-  // Prepare data for Recharts
-  const chartData = top_3.map(item => ({
-    name: item.disease,
-    confidence: item.confidence
-  }));
-
-  const COLORS = ['#0d9488', '#3b82f6', '#94a3b8']; // Teal, Blue, Slate
+  const {
+    final_prediction, confidence, top_3 = [], model_predictions = {}, doctor_recommendation,
+    disease_details, unrecognized_symptoms = [], urgent,
+  } = data;
+  const band = confidenceBand(confidence);
+  const modelVotes = Object.values(model_predictions);
+  const agreeing = modelVotes.filter(p => p === final_prediction).length;
+  const urgentAlternatives = top_3.slice(1).filter(t => t.urgent).map(t => t.disease);
+  const hasProfile = disease_details && disease_details.description && disease_details.description !== 'Information not available.';
 
   return (
-    <div className="max-w-5xl mx-auto px-4 py-12">
-      <Link to="/predict" className="inline-flex items-center text-slate-500 hover:text-primary-600 font-medium mb-8 transition-colors">
-        <ArrowLeft className="w-4 h-4 mr-2" />
-        Back to Symptom Checker
-      </Link>
+    <div className="max-w-6xl mx-auto px-4 py-8 sm:py-12">
+      <div className="flex items-center justify-between mb-6 print:hidden">
+        <Link to="/predict" className="inline-flex items-center text-slate-500 hover:text-primary-600 font-medium transition-colors">
+          <ArrowLeft className="w-4 h-4 mr-2" aria-hidden="true" />
+          Back to Symptom Checker
+        </Link>
+        <button onClick={() => window.print()} className="hidden sm:inline-flex items-center text-sm text-slate-500 hover:text-primary-600">
+          <Printer className="w-4 h-4 mr-1.5" aria-hidden="true" />
+          Print / save as PDF
+        </button>
+      </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-        
-        {/* Main Prediction Column */}
-        <div className="lg:col-span-2 space-y-8">
-          {/* Primary Result Card */}
+      {urgent && (
+        <div role="alert" className="mb-6 rounded-2xl bg-red-600 text-white p-5 sm:p-6 flex items-start shadow-sm">
+          <Siren className="w-7 h-7 mr-4 shrink-0" aria-hidden="true" />
+          <div>
+            <h2 className="text-lg font-bold">This may need urgent medical attention</h2>
+            <p className="text-red-50 mt-1 text-sm sm:text-base">
+              {final_prediction} can be serious. If symptoms are severe or getting worse, call your local emergency
+              number (112 in India) or go to the nearest hospital now. Do not wait for an appointment.
+            </p>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 lg:gap-8">
+        {/* Main column */}
+        <div className="lg:col-span-2 space-y-6">
+          {/* Primary result */}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-            <div className="bg-gradient-to-r from-primary-600 to-primary-800 px-6 py-8 text-white text-center">
-              <Activity className="w-12 h-12 mx-auto mb-4 opacity-80" />
-              <h2 className="text-sm font-medium text-primary-100 uppercase tracking-widest mb-2">Primary Diagnosis</h2>
-              <h1 className="text-4xl font-bold tracking-tight mb-2">{final_prediction}</h1>
-              <div className="inline-flex items-center bg-white/20 rounded-full px-4 py-1.5 text-sm font-medium">
-                Confidence Score: <span className="ml-2 font-bold">{confidence}%</span>
+            <div className="bg-gradient-to-br from-primary-600 to-primary-800 px-6 py-8 text-white text-center">
+              <p className="text-xs font-semibold text-primary-100 uppercase tracking-widest mb-2">Most likely condition</p>
+              <h1 className="text-3xl sm:text-4xl font-bold tracking-tight mb-4">{final_prediction}</h1>
+              <div className="flex flex-wrap justify-center items-center gap-2">
+                <span className="inline-flex items-center bg-white/20 rounded-full px-4 py-1.5 text-sm font-medium">
+                  Confidence <span className="ml-1.5 font-bold">{confidence}%</span>
+                </span>
+                <span className={`rounded-full px-3 py-1.5 text-sm font-semibold ${band.tone}`}>{band.label}</span>
               </div>
             </div>
-            <div className="p-6 bg-amber-50 border-b border-amber-100 flex items-start">
-              <AlertTriangle className="w-5 h-5 text-amber-600 mr-3 shrink-0 mt-0.5" />
-              <p className="text-sm text-amber-800 leading-relaxed">
-                <strong className="font-semibold">Disclaimer:</strong> This prediction is based on a machine learning model trained on general data and is not a substitute for professional medical advice. Always consult a qualified healthcare provider for an accurate diagnosis.
+
+            {confidence < 40 && (
+              <div className="px-6 py-4 bg-amber-50 border-b border-amber-100 flex items-start text-sm text-amber-900">
+                <HelpCircle className="w-5 h-5 text-amber-600 mr-3 shrink-0" aria-hidden="true" />
+                <p>
+                  Your symptoms fit several conditions about equally well, so treat the list below as possibilities
+                  rather than an answer. Adding more specific symptoms usually sharpens the result.
+                </p>
+              </div>
+            )}
+            {urgentAlternatives.length > 0 && !urgent && (
+              <div className="px-6 py-4 bg-red-50 border-b border-red-100 flex items-start text-sm text-red-900">
+                <Siren className="w-5 h-5 text-red-600 mr-3 shrink-0" aria-hidden="true" />
+                <p>
+                  <strong>{urgentAlternatives.join(' and ')}</strong> {urgentAlternatives.length > 1 ? 'are' : 'is'} also
+                  possible and can be serious. Seek prompt care if symptoms are severe.
+                </p>
+              </div>
+            )}
+            <div className="px-6 py-4 bg-slate-50 flex items-start text-sm text-slate-600">
+              <AlertTriangle className="w-5 h-5 text-slate-400 mr-3 shrink-0" aria-hidden="true" />
+              <p>
+                This is a machine-learning estimate, not a diagnosis. Always consult a qualified healthcare provider.
               </p>
             </div>
           </div>
 
-          {/* Comprehensive Disease Profile */}
-          {disease_details && (
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
-              <div className="p-6 border-b border-slate-100 flex items-center bg-slate-50">
-                <Info className="w-6 h-6 text-primary-600 mr-3" />
-                <h3 className="text-xl font-bold text-slate-800">Comprehensive Disease Profile</h3>
-              </div>
-              
-              <div className="p-6 space-y-6">
-                {/* Description */}
-                <div>
-                  <p className="text-slate-700 leading-relaxed bg-slate-50 p-4 rounded-xl border border-slate-100">
-                    {disease_details.description || "Detailed description not available."}
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  {/* Medications */}
-                  <div className="space-y-3">
-                    <h4 className="flex items-center text-sm font-bold text-slate-700 uppercase tracking-wide">
-                      <Pill className="w-4 h-4 mr-2 text-indigo-500" />
-                      Medications
-                    </h4>
-                    {disease_details.medications?.length > 0 ? (
-                      <ul className="space-y-2">
-                        {disease_details.medications.map((item, idx) => (
-                          <li key={idx} className="flex items-start text-slate-600 text-sm bg-indigo-50/50 p-2 rounded-lg border border-indigo-100/50">
-                            <span className="mr-2 text-indigo-400">•</span>
-                            {item}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-sm text-slate-400 italic">No specific medications listed.</p>
-                    )}
-                  </div>
-
-                  {/* Diets */}
-                  <div className="space-y-3">
-                    <h4 className="flex items-center text-sm font-bold text-slate-700 uppercase tracking-wide">
-                      <Utensils className="w-4 h-4 mr-2 text-emerald-500" />
-                      Recommended Diet
-                    </h4>
-                    {disease_details.diets?.length > 0 ? (
-                      <ul className="space-y-2">
-                        {disease_details.diets.map((item, idx) => (
-                          <li key={idx} className="flex items-start text-slate-600 text-sm bg-emerald-50/50 p-2 rounded-lg border border-emerald-100/50">
-                            <span className="mr-2 text-emerald-400">•</span>
-                            {item}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-sm text-slate-400 italic">No specific diets listed.</p>
-                    )}
-                  </div>
-
-                  {/* Precautions */}
-                  <div className="space-y-3">
-                    <h4 className="flex items-center text-sm font-bold text-slate-700 uppercase tracking-wide">
-                      <Shield className="w-4 h-4 mr-2 text-rose-500" />
-                      Precautions
-                    </h4>
-                    {disease_details.precautions?.length > 0 ? (
-                      <ul className="space-y-2">
-                        {disease_details.precautions.map((item, idx) => (
-                          <li key={idx} className="flex items-start text-slate-600 text-sm bg-rose-50/50 p-2 rounded-lg border border-rose-100/50">
-                            <span className="mr-2 text-rose-400">•</span>
-                            {item}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-sm text-slate-400 italic">No specific precautions listed.</p>
-                    )}
-                  </div>
-
-                  {/* Workouts */}
-                  <div className="space-y-3">
-                    <h4 className="flex items-center text-sm font-bold text-slate-700 uppercase tracking-wide">
-                      <Activity className="w-4 h-4 mr-2 text-sky-500" />
-                      Workouts & Activities
-                    </h4>
-                    {disease_details.workouts?.length > 0 ? (
-                      <ul className="space-y-2">
-                        {disease_details.workouts.map((item, idx) => (
-                          <li key={idx} className="flex items-start text-slate-600 text-sm bg-sky-50/50 p-2 rounded-lg border border-sky-100/50">
-                            <span className="mr-2 text-sky-400">•</span>
-                            {item}
-                          </li>
-                        ))}
-                      </ul>
-                    ) : (
-                      <p className="text-sm text-slate-400 italic">No specific workouts listed.</p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Model Comparison Chart */}
+          {/* Top 3 */}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-            <h3 className="text-lg font-bold text-slate-800 mb-6 border-b border-slate-100 pb-4">Top 3 Predictions Analysis</h3>
-            <div className="h-72 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={chartData} margin={{ top: 20, right: 30, left: 0, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                  <XAxis dataKey="name" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} />
-                  <YAxis tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} domain={[0, 100]} />
-                  <Tooltip 
-                    cursor={{fill: '#f8fafc'}}
-                    contentStyle={{borderRadius: '8px', border: 'none', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)'}}
-                  />
-                  <Bar dataKey="confidence" radius={[4, 4, 0, 0]} maxBarSize={60}>
-                    {chartData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+            <h2 className="text-lg font-bold text-slate-800 mb-1">Possible conditions</h2>
+            <p className="text-sm text-slate-500 mb-5">
+              In testing, the correct condition was among these three about 98% of the time.
+            </p>
+            <ol className="space-y-4">
+              {top_3.map((item, idx) => (
+                <li key={item.disease}>
+                  <div className="flex justify-between items-baseline mb-1.5 gap-4">
+                    <span className="font-medium text-slate-800">
+                      <span className="text-slate-400 mr-2">{idx + 1}.</span>
+                      {item.disease}
+                      {item.urgent && (
+                        <span className="ml-2 align-middle text-[11px] font-semibold uppercase tracking-wide text-red-700 bg-red-50 border border-red-100 rounded px-1.5 py-0.5">
+                          Urgent
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-sm font-semibold text-slate-600 tabular-nums">{item.confidence}%</span>
+                  </div>
+                  <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden" role="presentation">
+                    <div className={`h-full rounded-full ${BAR_COLORS[idx] || 'bg-slate-300'}`} style={{ width: `${Math.max(item.confidence, 1)}%` }} />
+                  </div>
+                </li>
+              ))}
+            </ol>
+          </div>
+
+          {/* Disease profile */}
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+            <div className="p-6 border-b border-slate-100 flex items-center bg-slate-50">
+              <Info className="w-6 h-6 text-primary-600 mr-3" aria-hidden="true" />
+              <h2 className="text-xl font-bold text-slate-800">About {final_prediction}</h2>
+            </div>
+            <div className="p-6 space-y-6">
+              <p className="text-slate-700 leading-relaxed">
+                {hasProfile ? disease_details.description : 'A detailed description is not available for this condition.'}
+              </p>
+              {hasProfile && (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <ProfileList icon={Pill} title="Common treatments" items={disease_details.medications} accent="text-indigo-500" empty="No treatments listed." />
+                    <ProfileList icon={Shield} title="Precautions" items={disease_details.precautions} accent="text-rose-500" empty="No precautions listed." />
+                    <ProfileList icon={Utensils} title="Diet" items={disease_details.diets} accent="text-emerald-500" empty="No diet advice listed." />
+                    <ProfileList icon={Activity} title="Lifestyle & activity" items={disease_details.workouts} accent="text-sky-500" empty="No activity advice listed." />
+                  </div>
+                  <p className="text-xs text-slate-500 border-t border-slate-100 pt-4">
+                    Treatments are general categories for reference only. Never start, stop or change medication
+                    without advice from a doctor or pharmacist.
+                  </p>
+                </>
+              )}
             </div>
           </div>
         </div>
 
-        {/* Sidebar Column */}
-        <div className="space-y-8">
-          
-          {/* Doctor Recommendation */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 relative overflow-hidden">
-            <div className="absolute top-0 right-0 p-4 opacity-10">
-              <Stethoscope className="w-24 h-24" />
-            </div>
-            <h3 className="text-lg font-bold text-slate-800 mb-4 relative z-10">Recommended Specialist</h3>
-            <div className="relative z-10">
-              <div className="text-2xl font-bold text-primary-600 mb-2">{doctor_recommendation.specialist}</div>
-              <p className="text-sm text-slate-600 mb-6">{doctor_recommendation.reason}</p>
-              
-              <div className="space-y-3">
-                <a 
-                  href={`https://www.practo.com/search/doctors?results_type=doctor&q=${doctor_recommendation.specialist}`} 
-                  target="_blank" 
-                  rel="noreferrer"
-                  className="w-full flex items-center justify-between px-4 py-3 bg-white border border-slate-200 rounded-xl hover:border-primary-300 hover:shadow-sm transition-all group"
-                >
-                  <span className="font-semibold text-slate-700 group-hover:text-primary-600">Practo</span>
-                  <ExternalLink className="w-4 h-4 text-slate-400 group-hover:text-primary-600" />
-                </a>
-                <a 
-                  href={`https://www.apollo247.com/specialties/${doctor_recommendation.specialist.toLowerCase().replace(/ /g, '-')}`} 
-                  target="_blank" 
-                  rel="noreferrer"
-                  className="w-full flex items-center justify-between px-4 py-3 bg-white border border-slate-200 rounded-xl hover:border-primary-300 hover:shadow-sm transition-all group"
-                >
-                  <span className="font-semibold text-slate-700 group-hover:text-primary-600">Apollo 24|7</span>
-                  <ExternalLink className="w-4 h-4 text-slate-400 group-hover:text-primary-600" />
-                </a>
+        {/* Sidebar */}
+        <div className="space-y-6">
+          {doctor_recommendation && (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+              <div className="flex items-center text-slate-500 text-sm font-semibold mb-3">
+                <Stethoscope className="w-4 h-4 mr-2" aria-hidden="true" />
+                Recommended specialist
+              </div>
+              <div className="text-2xl font-bold text-primary-700 mb-2">{doctor_recommendation.specialist}</div>
+              <p className="text-sm text-slate-600 mb-5">{doctor_recommendation.reason}</p>
+              <div className="space-y-2 print:hidden">
+                {specialistLinks(doctor_recommendation.specialist).map(({ name, href, icon: Icon }) => (
+                  <a
+                    key={name}
+                    href={href}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="w-full flex items-center justify-between px-4 py-3 bg-white border border-slate-200 rounded-xl hover:border-primary-300 hover:bg-primary-50/40 transition-colors group text-sm"
+                  >
+                    <span className="font-semibold text-slate-700 group-hover:text-primary-700">{name}</span>
+                    <Icon className="w-4 h-4 text-slate-400 group-hover:text-primary-600" aria-hidden="true" />
+                  </a>
+                ))}
               </div>
             </div>
-          </div>
+          )}
 
-          {/* Model Breakdown */}
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
-            <h3 className="text-md font-bold text-slate-800 mb-4 border-b border-slate-100 pb-3">Individual Model Outputs</h3>
-            <div className="space-y-3">
-              {Object.entries(model_predictions).map(([model, pred]) => (
-                <div key={model} className="flex justify-between items-center text-sm">
-                  <span className="text-slate-500">{model}</span>
-                  <span className="font-medium text-slate-800">{pred}</span>
-                </div>
-              ))}
+          {symptoms.length > 0 && (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+              <h2 className="text-md font-bold text-slate-800 mb-3">Symptoms you reported</h2>
+              <div className="flex flex-wrap gap-2">
+                {symptoms.map(s => (
+                  <span key={s} className="text-sm bg-slate-100 text-slate-700 rounded-full px-3 py-1">{s}</span>
+                ))}
+              </div>
+              {unrecognized_symptoms.length > 0 && (
+                <p className="mt-3 text-xs text-amber-700">
+                  Not recognised and ignored: {unrecognized_symptoms.join(', ')}
+                </p>
+              )}
             </div>
-          </div>
+          )}
 
+          {modelVotes.length > 0 && (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+              <h2 className="text-md font-bold text-slate-800 mb-1">Individual model outputs</h2>
+              <p className="text-sm text-slate-500 mb-4">
+                {agreeing} of {modelVotes.length} models agree with the final result.
+              </p>
+              <ul className="space-y-3">
+                {Object.entries(model_predictions).map(([model, pred]) => (
+                  <li key={model} className="flex justify-between items-start gap-3 text-sm">
+                    <span className="text-slate-500">{model}</span>
+                    <span className={`font-medium text-right flex items-center ${pred === final_prediction ? 'text-slate-800' : 'text-slate-500'}`}>
+                      {pred === final_prediction && <CheckCircle2 className="w-4 h-4 text-emerald-500 mr-1.5 shrink-0" aria-label="agrees" />}
+                      {pred}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <Link to="/predict" className="btn-primary w-full py-3 print:hidden">
+            <RotateCcw className="w-4 h-4 mr-2" aria-hidden="true" />
+            Start a new check
+          </Link>
         </div>
       </div>
     </div>
